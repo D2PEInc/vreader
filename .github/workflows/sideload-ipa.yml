@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - ".github/workflows/sideload-ipa.yml"
+      - ".github/ci/**"
 
 permissions:
   contents: write
@@ -22,6 +23,23 @@ jobs:
           sudo xcode-select -s /Applications/Xcode.app
           xcodebuild -version
 
+      - name: Patch MainActor default-arg call sites (sideload CI only)
+        run: python3 .github/ci/apply_mainactor_patches.py
+
+      - name: Soften Swift concurrency in project.yml for CI only
+        run: |
+          python3 << 'PY'
+          from pathlib import Path
+          p = Path("project.yml")
+          t = p.read_text()
+          t2 = t.replace('SWIFT_VERSION: "6.0"', 'SWIFT_VERSION: "5.0"')
+          t2 = t2.replace("SWIFT_STRICT_CONCURRENCY: complete", "SWIFT_STRICT_CONCURRENCY: minimal")
+          if t2 == t:
+              raise SystemExit("project.yml concurrency/version markers not found")
+          p.write_text(t2)
+          print("patched project.yml")
+          PY
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -33,23 +51,6 @@ jobs:
           xcodebuild -resolvePackageDependencies \
             -project vreader.xcodeproj \
             -scheme vreader
-
-      - name: Soften Swift concurrency in project.yml for CI only
-        run: |
-          set -euo pipefail
-          # project.yml pins SWIFT_VERSION 6 + STRICT complete — patch for this run only
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("project.yml")
-          t = p.read_text()
-          t2 = t.replace('SWIFT_VERSION: "6.0"', 'SWIFT_VERSION: "5.0"')
-          t2 = t2.replace("SWIFT_STRICT_CONCURRENCY: complete", "SWIFT_STRICT_CONCURRENCY: minimal")
-          if t2 == t:
-              raise SystemExit("project.yml concurrency/version markers not found")
-          p.write_text(t2)
-          print("patched project.yml")
-          PY
-          xcodegen generate
 
       - name: Archive (unsigned, for sideload resign)
         run: |
@@ -82,9 +83,6 @@ jobs:
           cp -R "$APP" Payload/
           zip -qry build/ipa/vreader-sideload.ipa Payload
           ls -lh build/ipa/vreader-sideload.ipa
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" || true
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist" || true
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist" || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -94,7 +92,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Create/update GitHub Release
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -102,6 +100,6 @@ jobs:
           TAG="ipa-sideload-$(date -u +%Y%m%d-%H%M)"
           gh release create "$TAG" build/ipa/vreader-sideload.ipa \
             --title "vreader sideload IPA ($TAG)" \
-            --notes "Unsigned IPA for sideloading (AltStore / Sideloadly / similar). Resign on install. Built by GitHub Actions with Swift 5 language mode for CI packability." \
+            --notes "Unsigned IPA for sideloading (AltStore / Sideloadly / similar). Resign on install." \
             --latest
           echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
