@@ -1,0 +1,89 @@
+name: Build Sideload IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/sideload-ipa.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project vreader.xcodeproj \
+            -scheme vreader
+
+      - name: Archive (unsigned, for sideload resign)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          # Unsigned device archive — AltStore/Sideloadly will resign on install
+          xcodebuild archive \
+            -project vreader.xcodeproj \
+            -scheme vreader \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/vreader.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            | xcpretty || true
+          # xcpretty may not be installed; ensure archive exists
+          test -d build/vreader.xcarchive/Products/Applications
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          APP=$(find build/vreader.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -1)
+          echo "Packaging: $APP"
+          rm -rf Payload build/ipa
+          mkdir -p Payload build/ipa
+          cp -R "$APP" Payload/
+          zip -qry build/ipa/vreader-sideload.ipa Payload
+          ls -lh build/ipa/vreader-sideload.ipa
+          # Record identity for the download page
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist" || true
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist" || true
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist" || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vreader-sideload-ipa
+          path: build/ipa/vreader-sideload.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create/update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="ipa-sideload-$(date -u +%Y%m%d-%H%M)"
+          gh release create "$TAG" build/ipa/vreader-sideload.ipa \
+            --title "vreader sideload IPA ($TAG)" \
+            --notes "Unsigned/ad-hoc style IPA for sideloading (AltStore / Sideloadly / similar). Resign on your device. Built by GitHub Actions from main." \
+            --latest
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
