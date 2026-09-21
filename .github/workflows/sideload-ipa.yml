@@ -34,14 +34,27 @@ jobs:
             -project vreader.xcodeproj \
             -scheme vreader
 
+      - name: Soften Swift concurrency in project.yml for CI only
+        run: |
+          set -euo pipefail
+          # project.yml pins SWIFT_VERSION 6 + STRICT complete — patch for this run only
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("project.yml")
+          t = p.read_text()
+          t2 = t.replace('SWIFT_VERSION: "6.0"', 'SWIFT_VERSION: "5.0"')
+          t2 = t2.replace("SWIFT_STRICT_CONCURRENCY: complete", "SWIFT_STRICT_CONCURRENCY: minimal")
+          if t2 == t:
+              raise SystemExit("project.yml concurrency/version markers not found")
+          p.write_text(t2)
+          print("patched project.yml")
+          PY
+          xcodegen generate
+
       - name: Archive (unsigned, for sideload resign)
         run: |
           set -euo pipefail
           mkdir -p build
-          # Loosen Swift 6 concurrency for a packable sideload binary.
-          # Upstream project.yml sets SWIFT_STRICT_CONCURRENCY=complete, which
-          # currently fails Release archive on several Sendable/main-actor sites.
-          set -o pipefail
           xcodebuild archive \
             -project vreader.xcodeproj \
             -scheme vreader \
@@ -52,9 +65,11 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
+            SWIFT_VERSION=5.0 \
             SWIFT_STRICT_CONCURRENCY=minimal \
             SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
-            GCC_TREAT_WARNINGS_AS_ERRORS=NO
+            GCC_TREAT_WARNINGS_AS_ERRORS=NO \
+            OTHER_SWIFT_FLAGS='$(inherited) -swift-version 5'
           test -d build/vreader.xcarchive/Products/Applications
 
       - name: Package IPA
@@ -87,6 +102,6 @@ jobs:
           TAG="ipa-sideload-$(date -u +%Y%m%d-%H%M)"
           gh release create "$TAG" build/ipa/vreader-sideload.ipa \
             --title "vreader sideload IPA ($TAG)" \
-            --notes "Unsigned IPA for sideloading (AltStore / Sideloadly / similar). Resign on install. Built by GitHub Actions." \
+            --notes "Unsigned IPA for sideloading (AltStore / Sideloadly / similar). Resign on install. Built by GitHub Actions with Swift 5 language mode for CI packability." \
             --latest
           echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
